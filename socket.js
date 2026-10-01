@@ -51,7 +51,9 @@ export function configureSocket(socketServer) {
         }
 
         try {
-            const decoded = jwt.verify(token, process.env.JWT_SECRET);
+            const decoded = jwt.verify(token, process.env.JWT_SECRET, {
+                maxAge: "5m",
+            });
             const user = await User.findById(decoded.id).select("-password");
 
             if (!user) {
