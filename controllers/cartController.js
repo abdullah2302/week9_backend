@@ -8,7 +8,17 @@ export async function getCart(req, res, next) {
         const cart = await Cart.findOne({ user: req.user._id }).populate(
             "items.product"
         );
-        res.json(cart || { items: [] });
+        if (!cart) {
+            return res.json({ items: [] });
+        }
+
+        const validItems = cart.items.filter((item) => item.product);
+        if (validItems.length !== cart.items.length) {
+            cart.items = validItems;
+            await cart.save();
+        }
+
+        res.json(cart);
     } catch (err) {
         next(err);
     }
