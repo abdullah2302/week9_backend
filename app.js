@@ -20,7 +20,6 @@ import reviewRoutes from "./routes/reviewRoute.js";
 import morgan from "morgan";
 
 dotenv.config();
-connectDB();
 
 const app = express();
 
@@ -59,15 +58,25 @@ app.use("/api/reviews", reviewRoutes);
 app.use(notFound);
 app.use(errorHandler);
 
-const PORT = process.env.PORT ;
-const httpServer = createServer(app);
-const io = new Server(httpServer, {
-  cors: {
-    origin: allowedOrigins,
-    credentials: true,
-  },
-});
+export { app };
 
-configureSocket(io);
+export async function startServer() {
+  await connectDB();
 
-httpServer.listen(PORT, () => console.log(`API running on http://localhost:${PORT}`));
+  const PORT = process.env.PORT || 5000;
+  const httpServer = createServer(app);
+  const io = new Server(httpServer, {
+    cors: {
+      origin: allowedOrigins,
+      credentials: true,
+    },
+  });
+
+  configureSocket(io);
+  httpServer.listen(PORT, () => console.log(`API running on http://localhost:${PORT}`));
+  return httpServer;
+}
+
+if (process.argv[1] && process.argv[1].endsWith("app.js")) {
+  startServer();
+}
