@@ -5,6 +5,10 @@ import User from "../models/User.js";
 export async function protect(req, res, next) {
     let token;
 
+    if (!process.env.JWT_SECRET) {
+        return res.status(500).json({ message: "Authentication is not configured" });
+    }
+
     if (req.headers.authorization?.startsWith("Bearer ")) {
         token = req.headers.authorization.split(" ")[1];
     }

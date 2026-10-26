@@ -6,7 +6,18 @@ import { generateToken } from "../utils/generateToken.js";
 // @route POST /api/auth/signup
 export async function signup(req, res, next) {
     try {
-        const { name, email, password } = req.body;
+        const { name, password } = req.body;
+        const { email: rawEmail } = req.body;
+
+        if (
+            typeof name !== "string" ||
+            typeof rawEmail !== "string" ||
+            typeof password !== "string"
+        ) {
+            res.status(400);
+            throw new Error("Name, email and password must be strings");
+        }
+        const email = rawEmail.trim().toLowerCase();
 
         if (!name || !email || !password) {
             res.status(400);
@@ -47,7 +58,14 @@ export async function signup(req, res, next) {
 // @route POST /api/auth/login
 export async function login(req, res, next) {
     try {
-        const { email, password } = req.body;
+        const { password } = req.body;
+        const { email: rawEmail } = req.body;
+
+        if (typeof rawEmail !== "string" || typeof password !== "string") {
+            res.status(400);
+            throw new Error("Email and password must be strings");
+        }
+        const email = rawEmail.trim().toLowerCase();
 
         if (!email || !password) {
             res.status(400);

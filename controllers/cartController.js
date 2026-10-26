@@ -1,12 +1,21 @@
 import Cart from "../models/Cart.js";
 import Product from "../models/Product.js";
+import mongoose from "mongoose";
 
+function validateProductId(productId) {
+    return mongoose.Types.ObjectId.isValid(productId);
+}
+
+function validateQuantity(qty) {
+    return Number.isInteger(qty) && qty >= 1;
+}
 
 // @route GET /api/cart
 export async function getCart(req, res, next) {
     try {
         const cart = await Cart.findOne({ user: req.user._id }).populate(
-            "items.product"
+            "items.product",
+            "name category price image inStock stockQuantity"
         );
         if (!cart) {
             return res.json({ items: [] });
@@ -28,6 +37,11 @@ export async function getCart(req, res, next) {
 export async function addToCart(req, res, next) {
     try {
         const { productId, qty = 1 } = req.body;
+        if (!validateProductId(productId) || !validateQuantity(qty)) {
+            res.status(400);
+            throw new Error("A valid productId and positive integer quantity are required");
+        }
+
         const product = await Product.findById(productId);
 
         if (!product) {
@@ -65,7 +79,10 @@ export async function addToCart(req, res, next) {
         }
 
         await cart.save();
-        await cart.populate("items.product");
+        await cart.populate(
+            "items.product",
+            "name category price image inStock stockQuantity"
+        );
         res.status(201).json(cart);
     } catch (err) {
         next(err);
@@ -76,6 +93,11 @@ export async function addToCart(req, res, next) {
 export async function updateCartItem(req, res, next) {
     try {
         const { qty } = req.body;
+        if (!validateProductId(req.params.productId)) {
+            res.status(400);
+            throw new Error("Invalid product id");
+        }
+
         const cart = await Cart.findOne({ user: req.user._id });
 
         if (!cart) {
@@ -89,6 +111,11 @@ export async function updateCartItem(req, res, next) {
         if (!item) {
             res.status(404);
             throw new Error("Item not in cart");
+        }
+
+        if (!Number.isInteger(qty)) {
+            res.status(400);
+            throw new Error("Quantity must be an integer");
         }
 
         if (qty < 1) {
@@ -109,7 +136,10 @@ export async function updateCartItem(req, res, next) {
         }
 
         await cart.save();
-        await cart.populate("items.product");
+        await cart.populate(
+            "items.product",
+            "name category price image inStock stockQuantity"
+        );
         res.json(cart);
     } catch (err) {
         next(err);
@@ -119,6 +149,11 @@ export async function updateCartItem(req, res, next) {
 // @route DELETE /api/cart/:productId
 export async function removeFromCart(req, res, next) {
     try {
+        if (!validateProductId(req.params.productId)) {
+            res.status(400);
+            throw new Error("Invalid product id");
+        }
+
         const cart = await Cart.findOne({ user: req.user._id });
         if (!cart) {
             res.status(404);
@@ -130,7 +165,10 @@ export async function removeFromCart(req, res, next) {
         );
 
         await cart.save();
-        await cart.populate("items.product");
+        await cart.populate(
+            "items.product",
+            "name category price image inStock stockQuantity"
+        );
         res.json(cart);
     } catch (err) {
         next(err);

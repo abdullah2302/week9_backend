@@ -1,0 +1,283 @@
+diff --git a/.env.example b/.env.example
+new file mode 100644
+index 0000000..9206b61
+--- /dev/null
++++ b/.env.example
+@@ -0,0 +1,5 @@
++PORT=5000
++MONGO_URI=
++JWT_SECRET=
++CLIENT_ORIGIN=http://localhost:5173
++NODE_ENV=development
+diff --git a/.gitignore b/.gitignore
+new file mode 100644
+index 0000000..ed45f73
+--- /dev/null
++++ b/.gitignore
+@@ -0,0 +1,6 @@
++node_modules/
++.env
++.env.*
++!.env.example
++*.log
++.DS_Store
+diff --git a/app.js b/app.js
+index 843bc5b..efe9b70 100644
+--- a/app.js
++++ b/app.js
+@@ -18,6 +18,8 @@ import chatRoutes from "./routes/chatRoute.js";
+ import reviewRoutes from "./routes/reviewRoute.js";
+ 
+ import morgan from "morgan";
++import helmet from "helmet";
++import rateLimit from "express-rate-limit";
+ 
+ dotenv.config();
+ 
+@@ -29,24 +31,33 @@ const app = express();
+ // than this API (e.g. localhost:5000) — without this, the browser blocks
+ // every request from the frontend.
+ 
+-const allowedOrigins = [
+-  process.env.CLIENT_ORIGIN,
+-];
++const allowedOrigins = [process.env.CLIENT_ORIGIN].filter(Boolean);
++
++app.use(helmet());
+ app.use(
+     cors({
+         origin: allowedOrigins,
+         credentials: true,
+     })
+ );
+-app.use(express.json());
+-app.use(morgan("dev"));
++app.use(express.json({ limit: "10kb" }));
++app.use(morgan(process.env.NODE_ENV === "production" ? "combined" : "dev"));
++
++// Brute-force protection on login/signup.
++const authLimiter = rateLimit({
++  windowMs: 15 * 60 * 1000,
++  limit: process.env.NODE_ENV === "test" ? 1000 : 20,
++  standardHeaders: true,
++  legacyHeaders: false,
++  message: { message: "Too many attempts, please try again later" },
++});
+ 
+ app.get("/api/health", (req, res) => res.json({
+   status: "ok",
+   database: mongoose.connection.readyState === 1 ? "connected" : "disconnected",
+ }));
+ 
+-app.use("/api/auth", authRoutes);
++app.use("/api/auth", authLimiter, authRoutes);
+ app.use("/api/products", productRoutes);
+ app.use("/api/cart", cartRoutes);
+ app.use("/api/wishlist", wishlistRoutes);
+diff --git a/controllers/authController.js b/controllers/authController.js
+index be85c2b..a1c6c15 100644
+--- a/controllers/authController.js
++++ b/controllers/authController.js
+@@ -8,6 +8,11 @@ export async function signup(req, res, next) {
+     try {
+         const { name, email, password } = req.body;
+ 
++        if ([name, email, password].some((v) => typeof v !== "string")) {
++            res.status(400);
++            throw new Error("Name, email and password must be strings");
++        }
++
+         if (!name || !email || !password) {
+             res.status(400);
+             throw new Error("Name, email and password are all required");
+@@ -49,6 +54,11 @@ export async function login(req, res, next) {
+     try {
+         const { email, password } = req.body;
+ 
++        if (typeof email !== "string" || typeof password !== "string") {
++            res.status(400);
++            throw new Error("Email and password must be strings");
++        }
++
+         if (!email || !password) {
+             res.status(400);
+             throw new Error("Email and password are required");
+diff --git a/controllers/orderController.js b/controllers/orderController.js
+index 65cdc93..d0902a3 100644
+--- a/controllers/orderController.js
++++ b/controllers/orderController.js
+@@ -1,9 +1,15 @@
+ 
++import mongoose from "mongoose";
+ import Order from "../models/Order.js";
++import Product from "../models/Product.js";
+ import User from "../models/User.js";
+ import Notification from "../models/Notification.js";
+ import { emitNotification } from "../socket.js";
+ 
++const SHIPPING_FREE_THRESHOLD = 100;
++const SHIPPING_FLAT_RATE = 10;
++const round2 = (n) => Math.round(n * 100) / 100;
++
+ export const createOrder = async (req, res) => {
+     try {
+         if (req.user.role === "admin") {
+@@ -12,34 +18,57 @@ export const createOrder = async (req, res) => {
+             });
+         }
+ 
+-        const {
+-            items,
+-            shippingAddress,
+-            paymentMethod,
+-            subtotal,
+-            shipping,
+-            total,
+-        } = req.body;
++        const { items, shippingAddress, paymentMethod } = req.body;
+ 
+-        if (!items || items.length === 0) {
+-            return res.status(400).json({
+-                message: "Your cart is empty",
+-            });
++        if (!Array.isArray(items) || items.length === 0) {
++            return res.status(400).json({ message: "Your cart is empty" });
+         }
+ 
+-        const order = await Order.create({
+-            user: req.user._id,
++        // Only trust product id + quantity from the client.
++        const wanted = new Map();
++        for (const item of items) {
++            const id = String(item?.product ?? "");
++            const qty = Number(item?.quantity);
++            if (!mongoose.Types.ObjectId.isValid(id) || !Number.isInteger(qty) || qty < 1 || qty > 100) {
++                return res.status(400).json({ message: "Invalid order item" });
++            }
++            wanted.set(id, (wanted.get(id) || 0) + qty);
++        }
+ 
+-            items,
++        // One query for all products (no per-item lookups).
++        const products = await Product.find({ _id: { $in: [...wanted.keys()] } })
++            .select("name price image inStock stockQuantity");
++        if (products.length !== wanted.size) {
++            return res.status(400).json({ message: "One or more products no longer exist" });
++        }
+ 
+-            shippingAddress,
++        const orderItems = [];
++        for (const product of products) {
++            const quantity = wanted.get(product._id.toString());
++            if (product.inStock === false || quantity > (product.stockQuantity ?? Infinity)) {
++                return res.status(400).json({ message: `${product.name} is out of stock or unavailable in that quantity` });
++            }
++            orderItems.push({
++                product: product._id,
++                name: product.name,
++                price: product.price,
++                quantity,
++                image: product.image,
++            });
++        }
+ 
+-            paymentMethod,
++        const subtotal = round2(orderItems.reduce((sum, i) => sum + i.price * i.quantity, 0));
++        const shipping = subtotal >= SHIPPING_FREE_THRESHOLD ? 0 : SHIPPING_FLAT_RATE;
++        const total = round2(subtotal + shipping);
+ 
++        const order = await Order.create({
++            user: req.user._id,
++            items: orderItems,
++            shippingAddress,
++            paymentMethod: ["card", "cod"].includes(paymentMethod) ? paymentMethod : "card",
+             subtotal,
+             shipping,
+             total,
+-
+             status: "pending",
+         });
+ 
+@@ -59,15 +88,13 @@ export const createOrder = async (req, res) => {
+             order,
+         });
+     } catch (error) {
+-        res.status(500).json({
+-            message: error.message,
++        const status = error.name === "ValidationError" ? 400 : 500;
++        res.status(status).json({
++            message: status === 400 ? error.message : "Could not place order",
+         });
+     }
+ };
+ 
+-
+-
+-
+ export const getMyOrders = async (req, res) => {
+     try {
+         const { orders, pagination } = await getPaginatedOrders(
+diff --git a/middleware/errorMiddleware.js b/middleware/errorMiddleware.js
+index e78da6c..d21616c 100644
+--- a/middleware/errorMiddleware.js
++++ b/middleware/errorMiddleware.js
+@@ -9,7 +9,9 @@ export function notFound(req, res, next) {
+ export function errorHandler(err, req, res, next) {
+     const statusCode = res.statusCode !== 200 ? res.statusCode : 500;
+     res.status(statusCode).json({
+-        message: err.message,
+-        stack: process.env.NODE_ENV === "production" ? undefined : err.stack,
++        message: statusCode === 500 && process.env.NODE_ENV !== "development"
++            ? "Internal server error"
++            : err.message,
++        stack: process.env.NODE_ENV === "development" ? err.stack : undefined,
+     });
+ }
+\ No newline at end of file
+diff --git a/models/Notification.js b/models/Notification.js
+index a52861a..1ff225d 100644
+--- a/models/Notification.js
++++ b/models/Notification.js
+@@ -6,7 +6,6 @@ const notificationSchema = new mongoose.Schema(
+             type: mongoose.Schema.Types.ObjectId,
+             ref: "User",
+             required: true,
+-            index: true,
+         },
+         type: {
+             type: String,
+@@ -30,4 +29,7 @@ const notificationSchema = new mongoose.Schema(
+     { timestamps: true }
+ );
+ 
++notificationSchema.index({ recipient: 1, createdAt: -1 });
++notificationSchema.index({ recipient: 1, read: 1 });
++
+ export default mongoose.model("Notification", notificationSchema);
+diff --git a/models/User.js b/models/User.js
+index f765366..6a54b00 100644
+--- a/models/User.js
++++ b/models/User.js
+@@ -25,7 +25,7 @@ const userSchema = new mongoose.Schema(
+ // Hash the password automatically whenever it's set/changed — controllers
+ // never touch bcrypt directly.
+ userSchema.pre("save", async function (){
+-    if (!this.isModified("password")) return next();
++    if (!this.isModified("password")) return;
+     const salt = await bcrypt.genSalt(10);
+     this.password = await bcrypt.hash(this.password, salt);
+     
+diff --git a/package.json b/package.json
+index 2cae33e..ae97cf0 100644
+--- a/package.json
++++ b/package.json
+@@ -17,7 +17,9 @@
+     "cors": "^2.8.6",
+     "dotenv": "^18.0.1",
+     "express": "^5.2.1",
++    "express-rate-limit": "^8.7.1",
+     "fs": "^0.0.1-security",
++    "helmet": "^8.3.0",
+     "jsonwebtoken": "^9.0.3",
+     "mongoose": "^9.10.1",
+     "morgan": "^1.12.1",

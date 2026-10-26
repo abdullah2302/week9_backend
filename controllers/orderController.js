@@ -1,5 +1,6 @@
-
+import mongoose from "mongoose";
 import Order from "../models/Order.js";
+import Product from "../models/Product.js";
 import User from "../models/User.js";
 import Notification from "../models/Notification.js";
 import { emitNotification } from "../socket.js";
@@ -12,34 +13,79 @@ export const createOrder = async (req, res) => {
             });
         }
 
-        const {
-            items,
-            shippingAddress,
-            paymentMethod,
-            subtotal,
-            shipping,
-            total,
-        } = req.body;
+        const { items, shippingAddress, paymentMethod } = req.body;
 
-        if (!items || items.length === 0) {
+        if (!Array.isArray(items) || items.length === 0) {
             return res.status(400).json({
                 message: "Your cart is empty",
             });
         }
 
+        const wanted = new Map();
+        for (const item of items) {
+            const productId = String(item?.product || "");
+            const quantity = Number(item?.quantity);
+            if (
+                !mongoose.Types.ObjectId.isValid(productId) ||
+                !Number.isInteger(quantity) ||
+                quantity < 1 ||
+                quantity > 100
+            ) {
+                return res.status(400).json({ message: "Invalid order item" });
+            }
+            wanted.set(productId, (wanted.get(productId) || 0) + quantity);
+        }
+
+        const products = await Product.find({
+            _id: { $in: [...wanted.keys()] },
+        }).select("name price image inStock stockQuantity");
+
+        if (products.length !== wanted.size) {
+            return res.status(400).json({
+                message: "One or more products no longer exist",
+            });
+        }
+
+        const orderItems = [];
+        for (const product of products) {
+            const quantity = wanted.get(product._id.toString());
+            if (
+                product.inStock === false ||
+                (product.stockQuantity !== undefined &&
+                    quantity > product.stockQuantity)
+            ) {
+                return res.status(400).json({
+                    message: `${product.name} is out of stock or unavailable in that quantity`,
+                });
+            }
+            orderItems.push({
+                product: product._id,
+                name: product.name,
+                price: product.price,
+                quantity,
+                image: product.image,
+            });
+        }
+
+        const subtotal = Math.round(
+            orderItems.reduce(
+                (sum, item) => sum + item.price * item.quantity,
+                0
+            ) * 100
+        ) / 100;
+        const shipping = subtotal >= 100 ? 0 : 10;
+        const total = Math.round((subtotal + shipping) * 100) / 100;
+
         const order = await Order.create({
             user: req.user._id,
-
-            items,
-
+            items: orderItems,
             shippingAddress,
-
-            paymentMethod,
-
+            paymentMethod: ["card", "cod"].includes(paymentMethod)
+                ? paymentMethod
+                : "card",
             subtotal,
             shipping,
             total,
-
             status: "pending",
         });
 
@@ -196,4 +242,3 @@ export const updateOrderStatus = async (req, res) => {
         });
     }
 };
-

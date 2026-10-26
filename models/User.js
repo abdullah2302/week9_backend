@@ -24,11 +24,11 @@ const userSchema = new mongoose.Schema(
 
 // Hash the password automatically whenever it's set/changed — controllers
 // never touch bcrypt directly.
-userSchema.pre("save", async function (){
+userSchema.pre("save", async function (next) {
     if (!this.isModified("password")) return next();
     const salt = await bcrypt.genSalt(10);
     this.password = await bcrypt.hash(this.password, salt);
-    
+    next();
 });
 
 userSchema.methods.matchPassword = function (enteredPassword) {
